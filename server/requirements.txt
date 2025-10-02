@@ -1,0 +1,16 @@
+spacy
+transformers
+torch
+httpx
+requests
+chromadb
+fitz
+langchain-huggingface
+fastapi~=0.116.1
+pymongo~=4.14.0
+motor~=3.7.1
+uuid~=1.30
+python-jose~=3.5.0
+passlib~=1.7.4
+pydantic~=2.11.7
+uvicorn~=0.35.0
