@@ -1,14 +1,19 @@
 # app/routers/rag.py
 import torch
-from fastapi import APIRouter, Request, HTTPException, Body
+from fastapi import APIRouter, Request, HTTPException, Body, Depends
 from typing import List, Any, Tuple
 from bson import ObjectId
 import fitz  # PyMuPDF
 import asyncio
 import io
+import asyncio
+from asyncio import to_thread
+
+from loguru import logger
 from motor.motor_asyncio import AsyncIOMotorGridFSBucket
 import chromadb
 from pydantic import BaseModel
+from fastapi_limiter.depends import RateLimiter
 
 from chunker import semantic_token_chunker
 from openrouter import call_openrouter
@@ -20,6 +25,7 @@ router = APIRouter(prefix="/rag", tags=["RAG"])
 # --------------------------
 class AskRequest(BaseModel):
     query: str
+    user_id: str
     chat_id: str
     top_k: int = 3
 
@@ -84,7 +90,7 @@ async def process_chat_pdf_helper(chat_id: str, request: Request) -> dict:
 
     fs = request.app.state.fs
     text = await read_pdf_from_gridfs(chat["pdf_file_id"], fs)
-    chunks = semantic_token_chunker(text, max_tokens=500, overlap_tokens=50)
+    chunks = semantic_token_chunker(text, max_tokens=500)
 
     return {
         "chat_id": chat_id,
@@ -171,19 +177,21 @@ async def embed_chat(chat_id: str, request: Request):
     return store_info
 
 
-@router.post("/ask")
+@router.post("/ask", dependencies=[Depends(RateLimiter(times=10, seconds=30))])
 async def rag_ask(payload: AskRequest = Body(...)):
     query = payload.query
     chat_id = payload.chat_id
     top_k = payload.top_k
+    user_id= payload.user_id
 
     collection = chroma_client.get_or_create_collection("chat_embeddings")
 
     embedder = get_bge_small_embedder()
-    loop = asyncio.get_event_loop()
-    query_embedding = await loop.run_in_executor(None, embedder.embed_query, query)
+    query_embedding = await to_thread(embedder.embed_query, query)
 
-    results = collection.query(
+
+    results = await to_thread(
+        collection.query,
         query_embeddings=[query_embedding],
         n_results=top_k,
         where={"chat_id": chat_id},
@@ -207,10 +215,12 @@ async def rag_ask(payload: AskRequest = Body(...)):
     {context}
     """
 
-    answer = call_openrouter(query, context)
-    return {"answer": answer}
+    answer = await call_openrouter(query, context)
 
+    problem_token = "<｜begin▁of▁sentence｜>"
+    cleaned_answer = answer.replace(problem_token, "").strip()
 
+    return {"answer": cleaned_answer}
 
 
 @router.get("/test")

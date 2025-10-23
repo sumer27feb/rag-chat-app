@@ -34,7 +34,7 @@ export default function Sidebar() {
 
     if (user) {
       fetchChats(); // fetch once immediately
-      interval = setInterval(fetchChats, 5000); // every 5 seconds
+      interval = setInterval(fetchChats, 500000); // every 500 seconds
     }
 
     return () => clearInterval(interval); // cleanup

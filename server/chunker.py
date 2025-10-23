@@ -20,7 +20,7 @@ def _token_len(text: str) -> int:
 
 def semantic_token_chunker(
     text: str,
-    max_tokens: int = 700,
+    max_tokens: int = 512,
     overlap_sentences: int = 2
 ) -> list[str]:
     """

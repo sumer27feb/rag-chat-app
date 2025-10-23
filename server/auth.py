@@ -1,14 +1,15 @@
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from jose import JWTError, jwt
-from passlib.hash import bcrypt
+from passlib.hash import argon2
 from typing import Annotated
-from pydantic import BaseModel, EmailStr, constr
+from pydantic import BaseModel, EmailStr, field_validator
 from pydantic.types import StringConstraints
 from fastapi_limiter.depends import RateLimiter
+import re
 
 # --- Config ---
 SECRET_KEY = "SUPER_SECRET_KEY"  # change in production
@@ -34,14 +35,28 @@ class SignUpIn(BaseModel):
         str,
         StringConstraints(
             min_length=8,
-            max_length=128,
-            pattern=r"^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^\w\s]).+$"
+            max_length=128
         )
     ]
+
+    # ✅ Custom validator instead of unsupported regex lookaheads
+    @field_validator("password")
+    def validate_password(cls, v: str) -> str:
+        if not re.search(r"[a-z]", v):
+            raise ValueError("Password must contain a lowercase letter")
+        if not re.search(r"[A-Z]", v):
+            raise ValueError("Password must contain an uppercase letter")
+        if not re.search(r"\d", v):
+            raise ValueError("Password must contain a digit")
+        if not re.search(r"[^\w\s]", v):
+            raise ValueError("Password must contain a special character")
+        return v
+
 
 class TokenOut(BaseModel):
     access_token: str
     token_type: str
+
 
 class UserOut(BaseModel):
     user_id: str
@@ -56,6 +71,7 @@ class UserOut(BaseModel):
         )
     ]
 
+
 # --- Helpers ---
 def create_access_token(data: dict, expires_delta: timedelta | None = None):
     to_encode = data.copy()
@@ -63,8 +79,10 @@ def create_access_token(data: dict, expires_delta: timedelta | None = None):
     to_encode.update({"exp": expire})
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
+
 def get_users_col(request: Request):
     return request.app.state.db["users"]
+
 
 async def get_current_user(request: Request, token: str = Depends(oauth2_scheme)):
     try:
@@ -79,6 +97,7 @@ async def get_current_user(request: Request, token: str = Depends(oauth2_scheme)
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
     return user
+
 
 # --- Routes ---
 @router.post("/signup", response_model=TokenOut, dependencies=[Depends(RateLimiter(times=5, seconds=60))])
@@ -98,7 +117,7 @@ async def signup(request: Request, data: SignUpIn):
         "user_id": user_id,
         "email": email,
         "username": username,
-        "password": bcrypt.hash(data.password),
+        "password": argon2.hash(data.password),
         "created_at": datetime.now(timezone.utc),
     }
     await users.insert_one(user_doc)
@@ -106,15 +125,17 @@ async def signup(request: Request, data: SignUpIn):
     token = create_access_token({"sub": user_id})
     return {"access_token": token, "token_type": "bearer"}
 
+
 @router.post("/login", response_model=TokenOut, dependencies=[Depends(RateLimiter(times=5, seconds=60))])
 async def login(request: Request, form_data: OAuth2PasswordRequestForm = Depends()):
     users = get_users_col(request)
     user = await users.find_one({"email": form_data.username.lower().strip()})
-    if not user or not bcrypt.verify(form_data.password, user["password"]):
+    if not user or not argon2.verify(form_data.password, user["password"]):
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
     token = create_access_token({"sub": user["user_id"]})
     return {"access_token": token, "token_type": "bearer"}
+
 
 @router.get("/me", response_model=UserOut)
 async def me(current_user: dict = Depends(get_current_user)):
