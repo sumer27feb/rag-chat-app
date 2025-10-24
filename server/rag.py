@@ -10,13 +10,14 @@ import asyncio
 from asyncio import to_thread
 
 from loguru import logger
-from motor.motor_asyncio import AsyncIOMotorGridFSBucket
+from motor.motor_asyncio import AsyncIOMotorGridFSBucket, AsyncIOMotorCollection
 import chromadb
 from pydantic import BaseModel
 from fastapi_limiter.depends import RateLimiter
 
 from chunker import semantic_token_chunker
 from openrouter import call_openrouter
+from utils import col_messages
 
 router = APIRouter(prefix="/rag", tags=["RAG"])
 
@@ -57,10 +58,44 @@ def get_bge_small_embedder(device: str | None = None) -> HuggingFaceEmbeddings:
     )
     return embedder
 
+def estimate_tokens(text: str) -> int:
+    """A simple token estimation placeholder (replace with tiktoken or similar)."""
+    return len(text.split()) // 2
+
+MAX_CONTEXT_TOKENS = 4096
+
 
 # --------------------------
 # Helpers: PDF read & split
 # --------------------------
+def get_messages_collection(request: Request) -> AsyncIOMotorCollection:
+    # We call your utility function here
+    return col_messages(request)
+
+async def retrieve_chat_history(
+        messages_col: AsyncIOMotorCollection,
+        chat_id: str,
+        max_turns: int
+) -> list[dict]:
+    """Retrieves the most recent messages in a single, efficient query."""
+
+    # max_turns * 2 ensures we get both user and bot messages for N turns
+    limit = max_turns * 2
+
+    history_cursor = messages_col.find(
+        {"chat_id": chat_id}
+    ).sort(
+        # We want the newest messages, so sort by timestamp descending (-1)
+        # Then we reverse the list in Python to process oldest-first
+        "timestamp", -1
+    ).limit(limit)
+
+    # Execute the query and get the list
+    history = await history_cursor.to_list(length=limit)
+
+    # Reverse the list so the oldest messages are at the start (for easy truncation)
+    return history[::-1]
+
 async def read_pdf_from_gridfs(file_id: str, fs: AsyncIOMotorGridFSBucket) -> str:
     try:
         file_id_obj = ObjectId(file_id)
@@ -178,7 +213,8 @@ async def embed_chat(chat_id: str, request: Request):
 
 
 @router.post("/ask", dependencies=[Depends(RateLimiter(times=10, seconds=30))])
-async def rag_ask(payload: AskRequest = Body(...)):
+async def rag_ask(payload: AskRequest = Body(...),
+    messages_col: AsyncIOMotorCollection = Depends(get_messages_collection)):
     query = payload.query
     chat_id = payload.chat_id
     top_k = payload.top_k
@@ -189,6 +225,19 @@ async def rag_ask(payload: AskRequest = Body(...)):
     embedder = get_bge_small_embedder()
     query_embedding = await to_thread(embedder.embed_query, query)
 
+    history_messages = await retrieve_chat_history(
+        messages_col,
+        chat_id,
+        max_turns=5,
+    )
+
+    # Format history into a list of strings for easy truncation
+    formatted_history = []
+    for msg in history_messages:
+        role = msg.get("role", "Bot").capitalize()
+        content = msg.get("content", "")
+        # Use a consistent, distinct format for the prompt
+        formatted_history.append(f"{role}: {content}")
 
     results = await to_thread(
         collection.query,
@@ -202,20 +251,57 @@ async def rag_ask(payload: AskRequest = Body(...)):
     dists = results.get("distances", [[]])[0]
     metas = results.get("metadatas", [[]])[0]
 
-    if not docs:
+    # If no RAG docs and no history, return the error message
+    if not docs and not formatted_history:
         return {"chat_id": chat_id, "query": query, "answer": "No relevant context found for this chat."}
 
     context = "\n\n".join(docs)
 
-    # --- prepare prompt ---
-    prompt = f"""
-    Extract the exact answer from the context. Do not include extra text.
+    # Define the base prompt structure with placeholders
+    base_prompt_template = f"""
+    # Instructions
+    You are an AI assistant. Use the provided RAG Context and the Conversation History to generate a continuous and coherent response to the Current User Query.
 
-    Context:
+    # RAG Context (Document Snippets)
     {context}
+
+    # Conversation History
+    {{history_placeholder}}
+
+    # Current User Query
+    User: {query}
     """
 
-    answer = await call_openrouter(query, context)
+    history_list = formatted_history[:]  # Copy the full history list
+    final_history_string = "\n".join(history_list)
+
+    # Truncation Loop
+    while True:
+        # 1. Build the prompt with the current history string
+        current_prompt = base_prompt_template.replace("{history_placeholder}", final_history_string)
+        total_tokens = estimate_tokens(current_prompt)
+
+        # 2. Check if the prompt is within limits (use a safety buffer of 100 tokens)
+        if total_tokens <= MAX_CONTEXT_TOKENS - 100:
+            logger.debug(f"✅ Context size OK: {total_tokens} tokens.")
+            break
+
+        # 3. If over the limit, truncate the oldest turn (2 messages)
+        if len(history_list) >= 2:
+            # The list is sorted OLDEST-FIRST, so pop(0) removes the oldest turns
+            history_list.pop(0)  # Remove oldest user message
+            history_list.pop(0)  # Remove oldest bot response
+            final_history_string = "\n".join(history_list)
+            logger.warning(f"✂️ Truncated 2 messages. History size: {len(history_list)}.")
+        else:
+            # If nothing left to truncate, clear history and proceed
+            final_history_string = ""
+            logger.warning("🚫 History fully truncated to fit context window.")
+            break
+
+    final_prompt = base_prompt_template.replace("{history_placeholder}", final_history_string)
+    logger.info(final_prompt)
+    answer = await call_openrouter(final_prompt, context)
 
     problem_token = "<｜begin▁of▁sentence｜>"
     cleaned_answer = answer.replace(problem_token, "").strip()

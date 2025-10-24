@@ -1,13 +1,16 @@
 import io
 import os
 import uuid
+from asyncio import to_thread
 from datetime import datetime, timezone
 from typing import Annotated, Literal, Optional, List, Dict, Any
+from dotenv import load_dotenv
 
 import bleach
 import fitz  # PyMuPDF
 import redis.asyncio as redis
 import uvicorn
+import chromadb
 from bson import ObjectId
 from fastapi import (
     FastAPI,
@@ -17,7 +20,7 @@ from fastapi import (
     Request,
     status,
     Query,
-    Depends,
+    Depends, Body,
 )
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -34,10 +37,12 @@ from auth import router as auth_router
 from rag import router as rag_router
 from utils import success_response, error_response
 
-# -------- Config --------
-MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017")
-DB_NAME = os.getenv("DB_NAME", "sumerllmqa")
-MAX_BYTES = 25 * 1024 * 1024  # 25 MB
+# ---- Database ----
+MONGO_URI = os.getenv("MONGO_URI")
+DB_NAME = os.getenv("DB_NAME")
+
+# ---- File limits ----
+MAX_BYTES = int(os.getenv("MAX_BYTES", 25 * 1024 * 1024))
 
 # -------- App --------
 app = FastAPI(title="RAG Chat API", version="1.0")
@@ -62,6 +67,7 @@ async def startup_event():
     app.mongodb_client = AsyncIOMotorClient(MONGO_URI, maxPoolSize=50)
     app.state.db = app.mongodb_client[DB_NAME]
     app.state.fs = AsyncIOMotorGridFSBucket(app.state.db)
+    app.state.chroma_client = chromadb.PersistentClient(path="./chroma_store")
 
     redis_client = redis.from_url(
         "redis://localhost:6379", encoding="utf8", decode_responses=True
@@ -273,18 +279,39 @@ async def get_messages(
 
 
 @app.delete("/chats/{chat_id}")
-async def delete_chat(chat_id: str, request: Request):
+async def delete_chat(chat_id: str, request: Request,
+    body: dict = Body(...)):
+    """Delete a chat and all its associated data."""
+    user_id = body.get("user_id")
+    if not user_id:
+        raise HTTPException(status_code=400, detail="user_id is required")
+
     """Delete a chat and all its associated messages and PDF."""
     chat = await get_chat_or_404(chat_id, request.app.state.db)
     await col_messages(request).delete_many({"chat_id": chat_id})
 
+    # Delete PDF file from GridFS if exists
     if chat.get("pdf_file_id"):
         try:
-            await request.app.state.fs.delete(chat["pdf_file_id"])
+            # Manual check — GridFSBucket has no .exists()
+            file_exists = await request.app.state.db["fs.files"].find_one({"_id": chat["pdf_file_id"]})
+            if file_exists:
+                await request.app.state.fs.delete(chat["pdf_file_id"])
         except Exception as e:
-            logger.warning(f"PDF delete failed: {e}")
+            logger.warning(f"⚠️ PDF delete failed: {e}")
+
 
     await col_chats(request).delete_one({"chat_id": chat_id})
+
+    # Remove from user's chat list
+    await col_user_chatlist(request).update_one(
+        {"user_id": user_id},
+        {"$pull": {"chat_ids": chat_id}}
+    )
+
+    collection = request.app.state.chroma_client.get_or_create_collection("chat_embeddings")
+    await to_thread(collection.delete, where={"chat_id": chat_id})
+
     logger.info(f"🗑️ Chat deleted | chat_id={chat_id}")
     return success_response({"message": "Chat deleted successfully"}, 200)
 

@@ -1,11 +1,15 @@
 import httpx
 from fastapi import HTTPException
 from loguru import logger  # Assuming logger is imported globally
-
+from dotenv import load_dotenv
+import os
 # Configuration (These can remain the same)
-OPENROUTER_API_KEY = "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"
-OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
-MODEL_NAME = "deepseek/deepseek-chat-v3.1:free"
+
+# Load variables from .env file
+load_dotenv()
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+OPENROUTER_URL = os.getenv("OPENROUTER_URL")
+MODEL_NAME = os.getenv("MODEL_NAME")
 
 
 # It's best practice to create an async client session once (e.g., at app startup)

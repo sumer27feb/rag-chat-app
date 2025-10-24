@@ -1,5 +1,7 @@
 import uuid
 from datetime import datetime, timedelta, timezone
+from dotenv import load_dotenv
+import os
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
@@ -11,10 +13,12 @@ from pydantic.types import StringConstraints
 from fastapi_limiter.depends import RateLimiter
 import re
 
-# --- Config ---
-SECRET_KEY = "SUPER_SECRET_KEY"  # change in production
-ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 60
+# Load variables from .env file
+load_dotenv()
+# ---- JWT ----
+SECRET_KEY = os.getenv("SECRET_KEY")
+ALGORITHM = os.getenv("ALGORITHM", "HS256")
+ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", 60))
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
