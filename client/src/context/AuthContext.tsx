@@ -15,9 +15,10 @@ type User = {
 
 type AuthCtx = {
   isLoggedIn: boolean;
-  token: string | null;
+  accessToken: string | null;
+  refreshToken: string | null;
   user: User | null;
-  loginWithToken: (token: string) => Promise<void>;
+  loginWithTokens: (access: string, refresh: string) => Promise<void>;
   logout: () => void;
 };
 
@@ -26,18 +27,21 @@ const AuthContext = createContext<AuthCtx | undefined>(undefined);
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
   children,
 }) => {
-  const [token, setToken] = useState<string | null>(() =>
-    localStorage.getItem("token")
+  const [accessToken, setAccessToken] = useState<string | null>(() =>
+    localStorage.getItem("access_token")
+  );
+  const [refreshToken, setRefreshToken] = useState<string | null>(() =>
+    localStorage.getItem("refresh_token")
   );
   const [user, setUser] = useState<User | null>(null);
 
-  // Attach/remove Authorization header globally via axios interceptor
+  // Attach Authorization header globally
   useEffect(() => {
     const id = api.interceptors.request.use((config) => {
-      const t = localStorage.getItem("token");
-      if (t) {
+      const token = localStorage.getItem("access_token");
+      if (token) {
         config.headers = config.headers ?? {};
-        config.headers.Authorization = `Bearer ${t}`;
+        config.headers.Authorization = `Bearer ${token}`;
       }
       return config;
     });
@@ -45,38 +49,60 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
   }, []);
 
   const fetchMe = async () => {
-    const { data } = await api.get<User>("/auth/me"); // header auto
+    const { data } = await api.get<User>("/auth/me");
     setUser(data);
   };
 
+  // Load user info on mount if tokens exist
   useEffect(() => {
-    if (!token) {
+    if (!accessToken || !refreshToken) {
       setUser(null);
       return;
     }
-    fetchMe().catch(() => {
-      // token invalid/expired
-      localStorage.removeItem("token");
-      setToken(null);
-      setUser(null);
-    });
-  }, [token]);
 
-  const loginWithToken = async (newToken: string) => {
-    localStorage.setItem("token", newToken);
-    setToken(newToken); // ✅ important
-    await fetchMe(); // safe because interceptor will send header
+    fetchMe().catch(async (err) => {
+      console.warn("Access token invalid or expired, trying refresh...", err);
+      try {
+        const res = await api.post("/auth/refresh", {
+          refresh_token: refreshToken,
+        });
+        const newAccess = res.data.access_token;
+        localStorage.setItem("access_token", newAccess);
+        setAccessToken(newAccess);
+        await fetchMe();
+      } catch {
+        console.error("Refresh failed, logging out.");
+        logout();
+      }
+    });
+  }, []);
+
+  const loginWithTokens = async (access: string, refresh: string) => {
+    localStorage.setItem("access_token", access);
+    localStorage.setItem("refresh_token", refresh);
+    setAccessToken(access);
+    setRefreshToken(refresh);
+    await fetchMe();
   };
 
   const logout = () => {
-    localStorage.removeItem("token");
-    setToken(null);
+    localStorage.removeItem("access_token");
+    localStorage.removeItem("refresh_token");
+    setAccessToken(null);
+    setRefreshToken(null);
     setUser(null);
   };
 
   const value = useMemo(
-    () => ({ isLoggedIn: !!token, token, user, loginWithToken, logout }),
-    [token, user]
+    () => ({
+      isLoggedIn: !!accessToken && !!user,
+      accessToken,
+      refreshToken,
+      user,
+      loginWithTokens,
+      logout,
+    }),
+    [accessToken, refreshToken, user]
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

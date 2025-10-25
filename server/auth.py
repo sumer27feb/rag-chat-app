@@ -19,6 +19,7 @@ load_dotenv()
 SECRET_KEY = os.getenv("SECRET_KEY")
 ALGORITHM = os.getenv("ALGORITHM", "HS256")
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", 60))
+REFRESH_TOKEN_EXPIRE_DAYS = int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", 7))
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
@@ -75,12 +76,30 @@ class UserOut(BaseModel):
         )
     ]
 
+class RefreshRequest(BaseModel):
+    refresh_token: str
+
 
 # --- Helpers ---
 def create_access_token(data: dict, expires_delta: timedelta | None = None):
     to_encode = data.copy()
     expire = datetime.now(timezone.utc) + (expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
-    to_encode.update({"exp": expire})
+    to_encode.update({
+        "exp": expire,
+        "iat": datetime.now(timezone.utc),
+        "type": "access"
+    })
+    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+
+
+def create_refresh_token(data: dict):
+    expire = datetime.now(timezone.utc) + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
+    to_encode = data.copy()
+    to_encode.update({
+        "exp": expire,
+        "iat": datetime.now(timezone.utc),
+        "type": "refresh"
+    })
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
 
@@ -92,19 +111,23 @@ async def get_current_user(request: Request, token: str = Depends(oauth2_scheme)
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         user_id: str = payload.get("sub")
-        if not user_id:
-            raise HTTPException(status_code=401, detail="Invalid token payload")
+        token_type: str = payload.get("type")
+
+        if not user_id or token_type != "access":
+            raise HTTPException(status_code=401, detail="Invalid token type or payload")
+
     except JWTError:
         raise HTTPException(status_code=401, detail="Invalid or expired token")
 
     user = await get_users_col(request).find_one({"user_id": user_id})
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
+
     return user
 
 
 # --- Routes ---
-@router.post("/signup", response_model=TokenOut, dependencies=[Depends(RateLimiter(times=5, seconds=60))])
+@router.post("/signup", response_model=TokenOut, dependencies=[Depends(RateLimiter(times=3, seconds=60))])
 async def signup(request: Request, data: SignUpIn):
     users = get_users_col(request)
 
@@ -126,8 +149,14 @@ async def signup(request: Request, data: SignUpIn):
     }
     await users.insert_one(user_doc)
 
-    token = create_access_token({"sub": user_id})
-    return {"access_token": token, "token_type": "bearer"}
+    access_token = create_access_token({"sub": user_id})
+    refresh_token = create_refresh_token({"sub": user_id})
+
+    return {
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "token_type": "bearer"
+    }
 
 
 @router.post("/login", response_model=TokenOut, dependencies=[Depends(RateLimiter(times=5, seconds=60))])
@@ -137,9 +166,30 @@ async def login(request: Request, form_data: OAuth2PasswordRequestForm = Depends
     if not user or not argon2.verify(form_data.password, user["password"]):
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
-    token = create_access_token({"sub": user["user_id"]})
-    return {"access_token": token, "token_type": "bearer"}
+    access_token = create_access_token({"sub": user["user_id"]})
+    refresh_token = create_refresh_token({"sub": user["user_id"]})
 
+    return {
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "token_type": "bearer"
+    }
+
+@router.post("/refresh", response_model=TokenOut)
+async def refresh_token(data: RefreshRequest):
+    try:
+        payload = jwt.decode(data.refresh_token, SECRET_KEY, algorithms=[ALGORITHM])
+        if payload.get("type") != "refresh":
+            raise HTTPException(status_code=401, detail="Invalid token type")
+        user_id: str = payload.get("sub")
+        if not user_id:
+            raise HTTPException(status_code=401, detail="Invalid token payload")
+    except JWTError:
+        raise HTTPException(status_code=401, detail="Invalid or expired refresh token")
+
+    # Create new access token
+    new_access_token = create_access_token({"sub": user_id})
+    return {"access_token": new_access_token, "token_type": "bearer"}
 
 @router.get("/me", response_model=UserOut)
 async def me(current_user: dict = Depends(get_current_user)):

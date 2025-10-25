@@ -1,4 +1,3 @@
-// src/components/auth/LoginSignupModal.tsx
 import React, { useState } from "react";
 import {
   Dialog,
@@ -16,50 +15,61 @@ import { api } from "@/lib/api";
 type Props = { open: boolean; onClose: () => void };
 
 const LoginSignupModal: React.FC<Props> = ({ open, onClose }) => {
-  const { loginWithToken } = useAuth();
+  const { loginWithTokens } = useAuth();
 
-  // shared inputs
   const [email, setEmail] = useState("");
-  const [username, setUsername] = useState(""); // for signup (and your request)
+  const [username, setUsername] = useState(""); // signup only
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
+  // --- SIGNUP ---
   const handleSignup = async () => {
     try {
       setLoading(true);
       setErr(null);
+
       const { data } = await api.post("/auth/signup", {
         email,
         username,
         password,
       });
-      console.log("Signup successful, token:", data);
-      await loginWithToken(data.access_token);
-      console.log("Signup successful, token:", data);
+
+      // Expect backend returns both tokens
+      const { access_token, refresh_token } = data;
+
+      await loginWithTokens(access_token, refresh_token);
+      console.log("✅ Signup successful:", data);
       onClose();
     } catch (e: any) {
+      console.error(e);
       setErr(e?.response?.data?.detail || "Signup failed");
     } finally {
       setLoading(false);
     }
   };
 
+  // --- LOGIN ---
   const handleLogin = async () => {
     try {
       setLoading(true);
       setErr(null);
-      // FastAPI OAuth2PasswordRequestForm expects form-encoded body with fields: username (email), password
+
       const form = new URLSearchParams();
       form.append("username", email);
       form.append("password", password);
+
       const { data } = await api.post("/auth/login", form, {
         headers: { "Content-Type": "application/x-www-form-urlencoded" },
       });
-      await loginWithToken(data.access_token);
-      console.log("Login successful, token:", data);
+
+      const { access_token, refresh_token } = data;
+
+      await loginWithTokens(access_token, refresh_token);
+      console.log("✅ Login successful:", data);
       onClose();
     } catch (e: any) {
+      console.error(e);
       setErr(e?.response?.data?.detail || "Login failed");
     } finally {
       setLoading(false);
@@ -84,6 +94,7 @@ const LoginSignupModal: React.FC<Props> = ({ open, onClose }) => {
             </TabsTrigger>
           </TabsList>
 
+          {/* ---------- LOGIN ---------- */}
           <TabsContent value="login" className="space-y-3 mt-4">
             <div className="space-y-2">
               <Label className="text-gray-300">Email</Label>
@@ -111,6 +122,7 @@ const LoginSignupModal: React.FC<Props> = ({ open, onClose }) => {
             </Button>
           </TabsContent>
 
+          {/* ---------- SIGNUP ---------- */}
           <TabsContent value="signup" className="space-y-3 mt-4">
             <div className="space-y-2">
               <Label className="text-gray-300">Email</Label>
@@ -130,7 +142,6 @@ const LoginSignupModal: React.FC<Props> = ({ open, onClose }) => {
                 onChange={(e) => setUsername(e.target.value)}
                 placeholder="sumerdev"
               />
-              {/* For later: show availability hint here */}
             </div>
             <div className="space-y-2">
               <Label className="text-gray-300">Password</Label>
