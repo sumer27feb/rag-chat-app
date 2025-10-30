@@ -32,6 +32,7 @@ from prometheus_fastapi_instrumentator import Instrumentator
 from pydantic import BaseModel, field_validator
 from pydantic.types import StringConstraints
 
+from celery_app import celery as celery_app_instance
 # Local imports
 from auth import router as auth_router
 from rag import router as rag_router
@@ -69,8 +70,11 @@ async def startup_event():
     app.state.fs = AsyncIOMotorGridFSBucket(app.state.db)
     app.state.chroma_client = chromadb.PersistentClient(path="./chroma_store")
 
+    redis_url = celery_app_instance.conf.broker_url
+    logger.info(f"Connecting to Redis for Limiter at: {redis_url}")
+
     redis_client = redis.from_url(
-        "redis://localhost:6379", encoding="utf8", decode_responses=True
+        redis_url, encoding="utf8", decode_responses=True
     )
     await FastAPILimiter.init(redis_client)
     logger.info("✅ MongoDB + Redis connected successfully.")
@@ -325,4 +329,4 @@ async def root():
 
 # -------- Run --------
 if __name__ == "__main__":
-    uvicorn.run(app, host="localhost", port=8001)
+    uvicorn.run("main:app", host="0.0.0.0", port=8001, reload=True)

@@ -17,7 +17,8 @@ from fastapi_limiter.depends import RateLimiter
 
 from chunker import semantic_token_chunker
 from openrouter import call_openrouter
-from utils import col_messages
+from utils import col_messages, success_response
+from tasks.chat_tasks import embed_chat_task
 
 router = APIRouter(prefix="/rag", tags=["RAG"])
 
@@ -205,11 +206,13 @@ async def process_chat_pdf(chat_id: str, request: Request):
 
 @router.post("/embed-chat/{chat_id}")
 async def embed_chat(chat_id: str, request: Request):
-    embeddings, chunks = await embed_chat_helper(chat_id, request)
-    if not embeddings:
-        raise HTTPException(status_code=404, detail="No chunks found for this chat.")
-    store_info = store_embeddings_in_chroma(chat_id, chunks, embeddings)
-    return store_info
+    # embeddings, chunks = await embed_chat_helper(chat_id, request)
+    # if not embeddings:
+    #     raise HTTPException(status_code=404, detail="No chunks found for this chat.")
+    # store_info = store_embeddings_in_chroma(chat_id, chunks, embeddings)
+    # return store_info
+    embed_chat_task.delay(chat_id)
+    return success_response({"message": "Embedding task queued", "chat_id": chat_id})
 
 
 @router.post("/ask", dependencies=[Depends(RateLimiter(times=10, seconds=30))])
