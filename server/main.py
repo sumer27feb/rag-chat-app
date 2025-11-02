@@ -68,7 +68,7 @@ async def startup_event():
     app.mongodb_client = AsyncIOMotorClient(MONGO_URI, maxPoolSize=50)
     app.state.db = app.mongodb_client[DB_NAME]
     app.state.fs = AsyncIOMotorGridFSBucket(app.state.db)
-    app.state.chroma_client = chromadb.PersistentClient(path="./chroma_store")
+    app.state.chroma_client = chromadb.HttpClient(host="rag_chromadb", port=8000)
 
     redis_url = celery_app_instance.conf.broker_url
     logger.info(f"Connecting to Redis for Limiter at: {redis_url}")

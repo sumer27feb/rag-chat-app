@@ -155,9 +155,9 @@ async def embed_chat_helper(chat_id: str) -> tuple[list[list[float]], list[str]]
 # ---------------------------
 # CHROMA STORE
 # ---------------------------
-chroma_client = chromadb.PersistentClient(path="./chroma_store")
+chroma_client = chromadb.HttpClient(host="rag_chromadb", port=8000)
 
-def store_embeddings_in_chroma(chat_id: str, chunks: list[str], embeddings: list[list[float]]) -> dict:
+def store_embeddings_in_chroma(chat_id: str, embeddings: list[list[float]], chunks: list[str]) -> dict:
     if not chunks or not embeddings or len(chunks) != len(embeddings):
         raise ValueError("Chunks and embeddings must be same non-empty length")
 
@@ -173,7 +173,7 @@ def store_embeddings_in_chroma(chat_id: str, chunks: list[str], embeddings: list
         embeddings=embeddings,
         metadatas=[{"chat_id": chat_id, "chunk_index": i} for i in range(len(chunks))]
     )
-
+    logger.success(f"✅ Stored {len(chunks)} embeddings for {chat_id} in Chroma")
     try:
         chroma_client.persist()
     except Exception:

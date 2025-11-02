@@ -17,12 +17,13 @@ def embed_chat_task(self, chat_id: str):
             asyncio.set_event_loop(loop)
 
         logger.info(f"🚀 Starting embedding for chat_id={chat_id}")
-        embeddings, chunks = loop.run_until_complete(embed_chat_helper(chat_id))
-
+        embeddings, chunks = asyncio.run(embed_chat_helper(chat_id))
         if not embeddings:
             raise ValueError("No chunks found for this chat")
 
-        logger.success(f"✅ Embedding successful | chat_id={chat_id} | chunks={len(chunks)}")
+        logger.info(f"✅ Embedding complete: {len(embeddings)} vectors generated")
+        result = store_embeddings_in_chroma(chat_id, embeddings, chunks)
+        logger.success(f"✅ Stored {result['num_chunks_stored']} embeddings for {chat_id} in Chroma")
         return {"chat_id": chat_id, "chunks": len(chunks)}
 
     except Exception as e:

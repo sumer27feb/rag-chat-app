@@ -38,26 +38,21 @@ device = 0 if torch.cuda.is_available() else -1
 # --------------------------
 # Local embedder (BAAI bge-small-en)
 # --------------------------
-from langchain_huggingface import HuggingFaceEmbeddings
 
-
-def get_bge_small_embedder(device: str | None = None) -> HuggingFaceEmbeddings:
+def get_bge_small_embedder(device: str | None = None):
+    from langchain_huggingface import HuggingFaceEmbeddings  # moved inside
+    import torch
     """
     Return a HuggingFaceEmbeddings instance for BAAI/bge-small-en.
     device: "cuda" or "cpu" or None to auto-detect.
     """
-    if device is None:
-        try:
-            import torch
-            device = "cuda" if torch.cuda.is_available() else "cpu"
-        except Exception:
-            device = "cpu"
 
-    embedder = HuggingFaceEmbeddings(
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    return HuggingFaceEmbeddings(
         model_name="BAAI/bge-small-en",
         model_kwargs={"device": device}
     )
-    return embedder
 
 def estimate_tokens(text: str) -> int:
     """A simple token estimation placeholder (replace with tiktoken or similar)."""
@@ -156,7 +151,7 @@ async def embed_chat_helper(chat_id: str, request: Request) -> Tuple[List[List[f
 # --------------------------
 # Chroma client & storage helper
 # --------------------------
-chroma_client = chromadb.PersistentClient(path="./chroma_store")
+chroma_client = chromadb.HttpClient(host="rag_chromadb", port=8000)
 
 
 def store_embeddings_in_chroma(
@@ -165,33 +160,45 @@ def store_embeddings_in_chroma(
     embeddings: List[List[float]],
     collection_name: str = "chat_embeddings"
 ) -> dict:
+    logger.debug(f"🧠 S  tarting to store embeddings for chat_id={chat_id}, "
+                 f"collection={collection_name}, num_chunks={len(chunks)}")
+
     if not chunks or not embeddings or len(chunks) != len(embeddings):
+        logger.error("❌ Invalid input: chunks and embeddings must be same non-empty length")
         raise ValueError("Chunks and embeddings must be same non-empty length")
 
-    collection = chroma_client.get_or_create_collection(
-        name=collection_name,
-        metadata={"hnsw:space": "cosine"}
-    )
-
-    ids = [f"{chat_id}_{i}" for i in range(len(chunks))]
-
-    collection.add(
-        ids=ids,
-        documents=chunks,
-        embeddings=embeddings,
-        metadatas=[{"chat_id": chat_id, "chunk_index": i} for i in range(len(chunks))]
-    )
-
     try:
-        chroma_client.persist()
-    except Exception:
-        pass
+        collection = chroma_client.get_or_create_collection(
+            name=collection_name,
+            metadata={"hnsw:space": "cosine"}
+        )
+        logger.debug(f"✅ Collection ready: {collection_name}")
 
-    return {
-        "chat_id": chat_id,
-        "num_chunks_stored": len(chunks),
-        "collection_name": collection_name
-    }
+        ids = [f"{chat_id}_{i}" for i in range(len(chunks))]
+        logger.debug(f"🆔 Generated IDs: {ids[:5]}{'...' if len(ids) > 5 else ''}")
+
+        collection.add(
+            ids=ids,
+            documents=chunks,
+            embeddings=embeddings,
+            metadatas=[{"chat_id": chat_id, "chunk_index": i} for i in range(len(chunks))]
+        )
+        logger.debug(f"📦 Added {len(chunks)} embeddings to collection {collection_name}")
+
+        chroma_client.persist()
+        logger.debug("💾 Chroma client persisted successfully.")
+
+        result = {
+            "chat_id": chat_id,
+            "num_chunks_stored": len(chunks),
+            "collection_name": collection_name
+        }
+        logger.debug(f"✅ Store result: {result}")
+        return result
+
+    except Exception as e:
+        logger.exception(f"🔥 Error while storing embeddings in Chroma: {e}")
+        raise
 
 
 
@@ -216,32 +223,34 @@ async def embed_chat(chat_id: str, request: Request):
 
 
 @router.post("/ask", dependencies=[Depends(RateLimiter(times=10, seconds=30))])
-async def rag_ask(payload: AskRequest = Body(...),
-    messages_col: AsyncIOMotorCollection = Depends(get_messages_collection)):
+async def rag_ask(
+    payload: AskRequest = Body(...),
+    messages_col: AsyncIOMotorCollection = Depends(get_messages_collection)
+):
     query = payload.query
     chat_id = payload.chat_id
     top_k = payload.top_k
-    user_id= payload.user_id
+    user_id = payload.user_id
+
+    logger.debug(f"📩 Received query: '{query}' | chat_id={chat_id}, user_id={user_id}, top_k={top_k}")
 
     collection = chroma_client.get_or_create_collection("chat_embeddings")
 
     embedder = get_bge_small_embedder()
     query_embedding = await to_thread(embedder.embed_query, query)
+    logger.debug(f"🔹 Query embedding generated. Vector length = {len(query_embedding)}")
 
-    history_messages = await retrieve_chat_history(
-        messages_col,
-        chat_id,
-        max_turns=5,
-    )
+    # Fetch chat history
+    history_messages = await retrieve_chat_history(messages_col, chat_id, max_turns=5)
+    logger.debug(f"🕓 Retrieved {len(history_messages)} messages from chat history.")
 
-    # Format history into a list of strings for easy truncation
     formatted_history = []
     for msg in history_messages:
         role = msg.get("role", "Bot").capitalize()
         content = msg.get("content", "")
-        # Use a consistent, distinct format for the prompt
         formatted_history.append(f"{role}: {content}")
 
+    # Query the vector DB
     results = await to_thread(
         collection.query,
         query_embeddings=[query_embedding],
@@ -254,61 +263,74 @@ async def rag_ask(payload: AskRequest = Body(...),
     dists = results.get("distances", [[]])[0]
     metas = results.get("metadatas", [[]])[0]
 
-    # If no RAG docs and no history, return the error message
+    logger.debug(f"📚 Retrieved {len(docs)} docs from Chroma. Distances: {dists}")
     if not docs and not formatted_history:
+        logger.warning("⚠️ No RAG docs and no chat history found.")
         return {"chat_id": chat_id, "query": query, "answer": "No relevant context found for this chat."}
 
     context = "\n\n".join(docs)
+    logger.debug(f"🧩 Context preview (first 300 chars): {context[:300]}...")
 
-    # Define the base prompt structure with placeholders
     base_prompt_template = f"""
-    # Instructions
-    You are an AI assistant. Use the provided RAG Context and the Conversation History to generate a continuous and coherent response to the Current User Query.
-
-    # RAG Context (Document Snippets)
+    # ROLE
+    You are a specialist assistant answering questions based *only* on the provided context.
+    
+    # INSTRUCTIONS
+    1.  Read the 'RAG Context' and the 'Current User Query'.
+    2.  Use the 'Conversation History' to understand the user's question, especially if it's a follow-up.
+    3.  Formulate an answer that directly responds to the 'Current User Query'.
+    4.  **IMPORTANT:** Base your answer **strictly** on the information found in the 'RAG Context'.
+    5.  If the answer is not in the context, state that you cannot find the information in the provided document.
+    6.  Do not use any external knowledge.
+    
+    # RAG CONTEXT (Document Snippets)
+    ---
     {context}
-
-    # Conversation History
+    ---
+    
+    # CONVERSATION HISTORY
+    ---
     {{history_placeholder}}
-
-    # Current User Query
+    ---
+    
+    # CURRENT USER QUERY
     User: {query}
+    
+    # ANSWER
+    Assistant:
     """
 
-    history_list = formatted_history[:]  # Copy the full history list
+    history_list = formatted_history[:]
     final_history_string = "\n".join(history_list)
 
     # Truncation Loop
     while True:
-        # 1. Build the prompt with the current history string
         current_prompt = base_prompt_template.replace("{history_placeholder}", final_history_string)
         total_tokens = estimate_tokens(current_prompt)
 
-        # 2. Check if the prompt is within limits (use a safety buffer of 100 tokens)
         if total_tokens <= MAX_CONTEXT_TOKENS - 100:
             logger.debug(f"✅ Context size OK: {total_tokens} tokens.")
             break
 
-        # 3. If over the limit, truncate the oldest turn (2 messages)
         if len(history_list) >= 2:
-            # The list is sorted OLDEST-FIRST, so pop(0) removes the oldest turns
-            history_list.pop(0)  # Remove oldest user message
-            history_list.pop(0)  # Remove oldest bot response
+            history_list.pop(0)
+            history_list.pop(0)
             final_history_string = "\n".join(history_list)
-            logger.warning(f"✂️ Truncated 2 messages. History size: {len(history_list)}.")
+            logger.warning(f"✂️ Truncated 2 messages. Remaining history: {len(history_list)} turns.")
         else:
-            # If nothing left to truncate, clear history and proceed
             final_history_string = ""
             logger.warning("🚫 History fully truncated to fit context window.")
             break
 
     final_prompt = base_prompt_template.replace("{history_placeholder}", final_history_string)
-    logger.info(final_prompt)
+    logger.info(f"🧠 Final prompt sent to LLM:\n{'-'*60}\n{final_prompt[:800]}...\n{'-'*60}")
+
     answer = await call_openrouter(final_prompt, context)
 
     problem_token = "<｜begin▁of▁sentence｜>"
     cleaned_answer = answer.replace(problem_token, "").strip()
 
+    logger.debug(f"💬 Model response (first 200 chars): {cleaned_answer[:200]}...")
     return {"answer": cleaned_answer}
 
 

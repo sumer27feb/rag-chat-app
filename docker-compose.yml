@@ -1,0 +1,82 @@
+version: "3.9"
+
+services:
+  fastapi:
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+    container_name: rag_fastapi
+    command: uvicorn main:app --host 0.0.0.0 --port 8001 --reload
+    ports:
+      - "8001:8001"
+    volumes:
+      - ./server:/app
+      - hf_cache:/root/.cache/huggingface
+      - ./chroma_store:/app/chroma_store # ✅ Shared Chroma data
+    env_file:
+      - server/.env
+    environment:
+      MONGO_URI: mongodb://root:root@mongodb:27017/sumerllmqa?authSource=admin
+      REDIS_URL: redis://redis:6379/0
+      CHROMA_URL: http://rag_chromadb:8000
+    depends_on:
+      - redis
+      - mongodb
+      - chromadb
+    restart: always
+
+  celery:
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+    container_name: rag_celery
+    command: celery -A celery_app.celery worker --loglevel=info
+    volumes:
+      - ./server:/app
+      - hf_cache:/root/.cache/huggingface
+      - ./chroma_store:/app/chroma_store # ✅ Same Chroma volume as FastAPI & ChromaDB
+    env_file:
+      - server/.env
+    environment:
+      MONGO_URI: mongodb://root:root@mongodb:27017/sumerllmqa?authSource=admin
+      REDIS_URL: redis://redis:6379/0
+      CHROMA_URL: http://rag_chromadb:8000
+    depends_on:
+      - redis
+      - mongodb
+      - chromadb
+    restart: always
+
+  redis:
+    image: redis:7-alpine
+    container_name: rag_redis
+    ports:
+      - "6379:6379"
+    restart: always
+
+  mongodb:
+    image: mongo:7.0
+    container_name: rag_mongodb
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: root
+      MONGO_INITDB_ROOT_PASSWORD: root
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+    restart: always
+
+  chromadb:
+    image: chromadb/chroma:latest
+    container_name: rag_chromadb
+    ports:
+      - "8002:8000"
+    environment:
+      ALLOW_RESET: "true"
+    volumes:
+      - ./chroma_store:/chroma/chroma_store # ✅ Shared volume
+    restart: always
+
+volumes:
+  mongo_data:
+  hf_cache:
