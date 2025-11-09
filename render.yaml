@@ -1,0 +1,94 @@
+services:
+  # === Frontend (React/Vue/SPA served by Nginx) ===
+  - type: web
+    name: rag-frontend
+    env: docker
+    dockerfilePath: ./client/Dockerfile
+    buildFilter:
+      paths:
+        - client/**
+    plan: starter
+    autoDeploy: true
+    ports:
+      - 80
+
+  # === FastAPI Backend ===
+  - type: web
+    name: rag-fastapi
+    env: docker
+    dockerfilePath: ./server/Dockerfile
+    buildFilter:
+      paths:
+        - server/**
+    plan: starter
+    autoDeploy: true
+    ports:
+      - 8001
+    envVars:
+      - key: MONGO_URI
+        value: mongodb://root:root@rag-mongodb:27017/sumerllmqa?authSource=admin
+      - key: REDIS_URL
+        value: redis://rag-redis:6379/0
+      - key: CHROMA_URL
+        value: http://rag-chromadb:8000
+
+  # === Celery Worker ===
+  - type: worker
+    name: rag-celery
+    env: docker
+    dockerfilePath: ./server/Dockerfile
+    buildFilter:
+      paths:
+        - server/**
+    plan: starter
+    autoDeploy: true
+    envVars:
+      - key: MONGO_URI
+        value: mongodb://root:root@rag-mongodb:27017/sumerllmqa?authSource=admin
+      - key: REDIS_URL
+        value: redis://rag-redis:6379/0
+      - key: CHROMA_URL
+        value: http://rag-chromadb:8000
+
+  # === Redis ===
+  - type: private
+    name: rag-redis
+    env: docker
+    image: redis:7-alpine
+    plan: starter
+    autoDeploy: true
+    ports:
+      - 6379
+
+  # === MongoDB ===
+  - type: private
+    name: rag-mongodb
+    env: docker
+    image: mongo:7.0
+    plan: starter
+    autoDeploy: true
+    ports:
+      - 27017
+    envVars:
+      - key: MONGO_INITDB_ROOT_USERNAME
+        value: root
+      - key: MONGO_INITDB_ROOT_PASSWORD
+        value: root
+
+  # === ChromaDB ===
+  - type: private
+    name: rag-chromadb
+    env: docker
+    image: chromadb/chroma:latest
+    plan: starter
+    autoDeploy: true
+    ports:
+      - 8000
+    envVars:
+      - key: ALLOW_RESET
+        value: "true"
+
+volumes:
+  - name: mongo_data
+  - name: hf_cache
+  - name: chroma_store
