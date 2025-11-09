@@ -1,12 +1,9 @@
 services:
-  # === Frontend (React/Vue/SPA served by Nginx) ===
+  # === Frontend (Nginx serving built SPA) ===
   - type: web
     name: rag-frontend
     env: docker
     dockerfilePath: ./client/Dockerfile
-    buildFilter:
-      paths:
-        - client/**
     plan: starter
     autoDeploy: true
     ports:
@@ -17,9 +14,6 @@ services:
     name: rag-fastapi
     env: docker
     dockerfilePath: ./server/Dockerfile
-    buildFilter:
-      paths:
-        - server/**
     plan: starter
     autoDeploy: true
     ports:
@@ -37,9 +31,6 @@ services:
     name: rag-celery
     env: docker
     dockerfilePath: ./server/Dockerfile
-    buildFilter:
-      paths:
-        - server/**
     plan: starter
     autoDeploy: true
     envVars:
@@ -74,6 +65,10 @@ services:
         value: root
       - key: MONGO_INITDB_ROOT_PASSWORD
         value: root
+    disk:
+      name: mongo_data
+      mountPath: /data/db
+      sizeGB: 1
 
   # === ChromaDB ===
   - type: private
@@ -87,8 +82,11 @@ services:
     envVars:
       - key: ALLOW_RESET
         value: "true"
+    disk:
+      name: chroma_store
+      mountPath: /chroma/chroma_store
+      sizeGB: 1
 
 volumes:
-  - name: mongo_data
   - name: hf_cache
-  - name: chroma_store
+    sizeGB: 1
