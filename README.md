@@ -1,137 +1,224 @@
 # 🧠 RAG Chat App
 
-A **Retrieval-Augmented Generation (RAG)** powered chat application that allows users to upload files (PDF, text, etc.) and ask **contextual questions** about their content. Built as part of my learning journey in **AI, backend engineering, and full-stack development**, this project demonstrates how to combine **modern AI frameworks with solid backend architecture**.
+A **production-ready Retrieval-Augmented Generation (RAG)** chat system built with **FastAPI**, **React (Vite)**, **MongoDB**, **ChromaDB**, **Celery**, and **Redis**, containerized via **Docker Compose** and served through **Nginx** as a reverse proxy.
+
+This project is structured and configured for seamless deployment on any Linux-based server (VPS, cloud instance, or local environment), following industry-standard practices.
 
 ---
 
-## 🚀 Features
+## ⚙️ Tech Stack
 
-- 📂 **File Upload & Ingestion** – Users can upload files which are processed and stored in a vector database (FAISS).
-- 🔍 **Context-Aware QA** – Uses RAG pipeline to fetch relevant chunks and generate accurate answers with LLMs.
-- 🛠️ **Frontend** – Built with **React + TypeScript** for a clean and responsive interface.
-- ⚡ **Backend** – **FastAPI** for APIs, document ingestion, and orchestrating retrieval/generation.
-- 🧩 **LangChain Integration** – Chunking, embeddings, retrieval pipeline.
-- 🐳 **Dockerized Deployment** – Portable and production-ready setup with Docker & docker-compose.
-- 🔑 **Secure Config Management** – Environment variables via `.env` (ignored in git).
-- 📊 **Extensible Architecture** – Can plug in other vector DBs (Pinecone, Weaviate, ChromaDB).
-
----
-
-## 🏗️ Tech Stack
-
-**Frontend**
-
-- Next.js / React (TypeScript)
-- Tailwind CSS (for styling)
-
-**Backend**
-
-- FastAPI (Python)
-- LangChain
-- FAISS (vector search)
-
-**AI / LLM**
-
-- OpenAI API (can swap with other LLM providers)
-- Custom embeddings pipeline
-
-**DevOps**
-
-- Docker, docker-compose
-- GitHub for version control
+| Layer                | Technology                  | Description                                                |
+| -------------------- | --------------------------- | ---------------------------------------------------------- |
+| **Frontend**         | React (Vite) + Tailwind CSS | Responsive client interface for chat interaction           |
+| **Backend API**      | FastAPI                     | Handles user requests, vector retrieval, and LLM responses |
+| **Task Queue**       | Celery + Redis              | Background processing for heavy or async operations        |
+| **Vector DB**        | ChromaDB                    | Embedding and retrieval layer for RAG pipeline             |
+| **Database**         | MongoDB                     | Persistent data storage (chat logs, users, metadata)       |
+| **Reverse Proxy**    | Nginx                       | Routes incoming traffic to the correct services            |
+| **Containerization** | Docker Compose              | Multi-service orchestration and environment isolation      |
 
 ---
 
-## 📂 Project Structure
+## 🧩 System Architecture
+
+                   ┌──────────────────────────────────────────────┐
+                   │                    NGINX                     │
+                   │         (Reverse Proxy + SSL Termination)    │
+                   └──────────────┬───────────────────────────────┘
+                                  │
+                    ┌─────────────┴───────────────┐
+                    │                             │
+            ┌────────────────┐           ┌──────────────────┐
+            │   Frontend     │           │     FastAPI      │
+            │ (React + Vite) │           │  Backend + Celery│
+            └────────────────┘           └─────────┬────────┘
+                                                    │
+                   ┌────────────────────────────────┼─────────────────────────┐
+                   │                                │                         │
+            ┌───────────────┐             ┌────────────────┐          ┌────────────────┐
+            │   MongoDB     │             │     Redis       │          │   ChromaDB     │
+            │ (Application  │             │ (Task Queue)    │          │ (Vector Store) │
+            │   Data)       │             │                 │          │                │
+            └───────────────┘             └────────────────┘          └────────────────┘
+
+Each service runs as a separate container and communicates internally via a dedicated Docker network.  
+Nginx exposes the app to the outside world on ports `80` and `443`.
+
+---
+
+## 🏗️ Project Structure
 
 ```
 rag-chat-app/
-│── frontend/         # React + TypeScript frontend
-│   ├── src/
-│   ├── package.json
-│   └── tsconfig.json
+├── client/ # React frontend (Vite)
+│ ├── Dockerfile
+│ └── dist/ # Production build output
 │
-│── backend/          # FastAPI backend
-│   ├── app/
-│   │   ├── main.py           # Entry point
-│   │   ├── routes/           # API endpoints
-│   │   ├── services/         # RAG logic
-│   │   └── utils/            # Helpers
-│   ├── requirements.txt
-│   └── Dockerfile
+├── server/ # FastAPI backend
+│ ├── Dockerfile
+│ ├── main.py
+│ ├── celery_app.py
+│ ├── requirements.txt
+│ ├── .env.example
+│ └── ...
 │
-│── docker/           # Docker & compose configs
-│── .gitignore
-│── README.md
+├── nginx/
+│ ├── nginx.conf # Reverse proxy config
+│ └── ssl/ # Local development certs (optional)
+│
+├── docker-compose.yml # Multi-service orchestration
+├── .env.example # Root env file (global vars)
+└── README.md
 ```
 
 ---
 
-## ⚙️ Setup & Installation
+## 🚀 Deployment
 
-### 1. Clone the repo
+This app is designed to be **fully deployable out-of-the-box** using Docker Compose.
+
+### 1. Clone the Repository
 
 ```bash
 git clone https://github.com/sumer27feb/rag-chat-app.git
 cd rag-chat-app
 ```
 
-### 2. Frontend setup
+### 2. Configure Environment Variables
+
+Copy example env files and adjust as needed:
 
 ```bash
-cd frontend
-npm install
-npm run dev
+cp server/.env.example server/.env
+cp .env.example .env
 ```
 
-### 3. Backend setup
+Make sure to update database credentials, API keys, and secret keys if applicable.
+
+---
+
+### 3. Build and Start All Services
 
 ```bash
-cd backend
-python -m venv venv
-source venv/bin/activate   # on Linux/Mac
-venv\Scripts\activate      # on Windows
+docker compose up -d --build
+```
 
-pip install -r requirements.txt
-uvicorn app.main:app --reload
+This will:
+
+- Build and start the **frontend**, **backend**, **celery worker**, **Redis**, **MongoDB**, and **ChromaDB**
+- Expose the frontend via Nginx on port `80` (HTTP)
+
+Once built, the app will be available at:
+
+```bash
+Frontend: http://localhost/
+API: http://localhost/api/
 ```
 
 ---
 
-## 🧪 Usage
+### 4. Persistent Volumes
 
-1. Upload a PDF/text file through the UI.
-2. The backend ingests the file, chunks it, and stores embeddings in FAISS.
-3. Ask questions in the chat – the app retrieves relevant chunks and passes them to the LLM.
-4. Get **context-aware answers** instantly.
+All data and vector indices are persisted automatically through Docker volumes:
 
----
+| Service  | Volume         | Description              |
+| -------- | -------------- | ------------------------ |
+| MongoDB  | `mongodb_data` | Database persistence     |
+| ChromaDB | `chroma_data`  | Vector store persistence |
 
-## 📖 Roadmap
+To remove all data (for a clean rebuild):
 
-- [ ] Authentication with JWT
-- [ ] Support for multiple users & sessions
-- [ ] Add Redis caching layer
-- [ ] Integrate Sentry for monitoring
-- [ ] Extend to support images/audio in RAG
-- [ ] Deploy on cloud (Render / Vercel / AWS)
+```bash
+docker compose down -v
+```
 
 ---
 
-## 🧑‍💻 About the Author
+## 🌐 Production Server Setup (Linux VPS / Cloud)
 
-👋 Hi, I’m **Sumer Dev Singh** – a full-stack developer & 2025 CSE graduate.  
-I love building **backend architectures, AI-powered applications, and experimenting with LLMs**.
+For real-world deployment:
 
-- 🌐 [Portfolio](https://sumer-dev-singh-portfolio.vercel.app)
-- 💻 [GitHub](https://github.com/sumer27feb)
-- 💼 [LinkedIn](https://www.linkedin.com/in/sumer-dev-singh-35870a234)
+1. Install dependencies
+
+```bash
+sudo apt update
+sudo apt install docker.io docker-compose -y
+```
+
+2. Clone and build
+
+```bash
+git clone https://github.com/sumer27feb/rag-chat-app.git
+cd rag-chat-app
+docker compose up -d --build
+```
+
+3. (Optional) Add your domain and SSL certs
+
+```bash
+Replace `nginx/ssl/myapp.local.crt` and `.key` with real certs, and update `nginx.conf`.
+```
+
+4. Access the app via your server IP or domain.
 
 ---
 
-## ⚠️ Disclaimer
+## 🧠 Development Workflow
 
-This project is **work in progress** 🚧. Expect frequent updates and refactors.  
-It’s primarily a **learning and showcase project**, but will evolve into a fully-fledged AI assistant over time.
+- **Frontend:** Hot-reload via Vite dev server (`npm run dev`)
+- **Backend:** Run FastAPI with Uvicorn (`uvicorn main:app --reload`)
+- **Celery:** Run worker manually (`celery -A celery_app.celery worker --loglevel=info`)
+- **Redis/Mongo/Chroma:** Automatically managed through Docker Compose
+
+All services can be independently tested or debugged.
 
 ---
+
+## 🧰 Common Commands
+
+| Action                     | Command                                 |
+| -------------------------- | --------------------------------------- |
+| Build & run all containers | `docker compose up -d --build`          |
+| View logs                  | `docker compose logs -f`                |
+| Stop all containers        | `docker compose down`                   |
+| Rebuild specific service   | `docker compose up -d --build server`   |
+| Enter container shell      | `docker exec -it <container_name> bash` |
+
+---
+
+## 🧾 Notes
+
+- Frontend served statically via **Nginx** (React build in `/usr/share/nginx/html`)
+- Backend requests proxied under `/api/`
+- **HTTPS** setup is optional for local and can be replaced by real certs in production
+- No external cloud dependencies — runs fully self-contained via Docker network
+
+---
+
+## 🧩 Next Steps (Production Enhancements)
+
+| Feature                         | Description                                                    |
+| ------------------------------- | -------------------------------------------------------------- |
+| 🔒 **SSL via Let’s Encrypt**    | Use `certbot` on VPS for automated certificate renewal         |
+| 🐙 **CI/CD Pipeline**           | Add GitHub Actions or Docker Hub auto-builds                   |
+| 📊 **Monitoring**               | Integrate Prometheus/Grafana or simple container healthchecks  |
+| 🔑 **Auth Layer**               | Add JWT-based login or API key validation (if not present yet) |
+| 🧠 **LLM Integration**          | Wire your FastAPI endpoints with OpenAI API / local model      |
+| 🧰 **Logging & Error Handling** | Centralized logging using `uvicorn` + `Celery` logs            |
+
+---
+
+## 👨‍💻 Maintainer
+
+**Sumer Dev Singh**  
+Full-Stack Developer | AI + Backend Focused  
+📍 Patna, Bihar (Remote Friendly)  
+🔗 [Portfolio](https://sumer-dev-singh-portfolio.vercel.app)  
+🐙 [GitHub](https://github.com/sumer27feb)  
+💼 [LinkedIn](https://linkedin.com/in/sumer-dev-singh-35870a234)
+
+---
+
+> _“Deploy like a developer, structure like an engineer.”_  
+> — RAG Chat App Infrastructure Philosophy

@@ -6,8 +6,8 @@ services:
       context: ./client
       dockerfile: Dockerfile
     container_name: rag_frontend
-    ports:
-      - "80:80"
+    expose:
+      - "80" # only accessible to other containers
     depends_on:
       - fastapi
     restart: always
@@ -18,12 +18,12 @@ services:
       dockerfile: server/Dockerfile
     container_name: rag_fastapi
     command: uvicorn main:app --host 0.0.0.0 --port 8001 --reload
-    ports:
-      - "8001:8001"
+    expose:
+      - "8001"
     volumes:
       - ./server:/app
       - hf_cache:/root/.cache/huggingface
-      - ./chroma_store:/app/chroma_store # ✅ Shared Chroma data
+      - ./chroma_store:/app/chroma_store
     env_file:
       - server/.env
     environment:
@@ -45,7 +45,7 @@ services:
     volumes:
       - ./server:/app
       - hf_cache:/root/.cache/huggingface
-      - ./chroma_store:/app/chroma_store # ✅ Same Chroma volume as FastAPI & ChromaDB
+      - ./chroma_store:/app/chroma_store
     env_file:
       - server/.env
     environment:
@@ -80,12 +80,27 @@ services:
   chromadb:
     image: chromadb/chroma:latest
     container_name: rag_chromadb
-    ports:
-      - "8002:8000"
+    expose:
+      - "8000"
     environment:
       ALLOW_RESET: "true"
     volumes:
-      - ./chroma_store:/chroma/chroma_store # ✅ Shared volume
+      - ./chroma_store:/chroma/chroma_store
+    restart: always
+
+  nginx:
+    image: nginx:1.25-alpine
+    container_name: rag_nginx
+    ports:
+      - "443:443"
+      - "80:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf
+      - ./nginx/ssl:/etc/nginx/ssl
+      - ./client/dist:/usr/share/nginx/html
+    depends_on:
+      - frontend
+      - fastapi
     restart: always
 
 volumes:
